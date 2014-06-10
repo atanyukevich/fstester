@@ -243,7 +243,9 @@ def randop():
 	
 #-----------------------------------------------------------------------------#
 if __name__ == "__main__":
-#	randop()
+	if len(sys.argv) > 1:
+		TESTDIR=sys.argv[1]
+
 	init_db()
 
 	try:	
