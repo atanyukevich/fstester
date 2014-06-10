@@ -1,0 +1,255 @@
+#!/usr/bin/env python2.7
+
+import random
+import time
+import string
+import os
+import sqlite3
+import shutil
+
+
+TESTDIR='/var/run/vpnc/'
+
+# data i'll write into files
+urandfile=open("/dev/urandom",'rb')
+RANDBYTES=urandfile.read(1024)
+
+
+chars=string.ascii_uppercase + string.ascii_lowercase + string.digits + '_' 
+OPERATIONS = [ "cp", "mv", "rm", "mkdir", "find", "finddir", "findfile",  "append", "read", "write" ]
+
+
+# db
+DBFILE='/tmp/results.db'
+conn = sqlite3.connect(DBFILE)
+c= conn.cursor()
+
+
+#-----------------------------------------------------------------------------#
+# db funcs
+#-----------------------------------------------------------------------------#
+def init_db():
+	try:
+		# Create table
+		c.execute('''CREATE TABLE reads (bytes int, time int)''')
+		c.execute('''CREATE TABLE writes (bytes int, time int)''')
+		c.execute('''CREATE TABLE ls (objs int, time int)''')
+	except sqlite3.OperationalError:
+		# db initialised
+		pass
+	finally:
+		conn.commit()
+#-----------------------------------------------------------------------------#
+def report_read(bytes, msecs):
+	try:
+		c.execute("INSERT INTO reads (bytes,time) VALUES (%d,%d)" %(bytes,msecs) )
+	except sqlite3.OperationalError:
+		print "SMTH wrong while insert into reads"
+	finally:
+		conn.commit()
+#-----------------------------------------------------------------------------#
+def report_write(bytes, msecs):
+	try:
+		c.execute("INSERT INTO writes (bytes,time) VALUES (%d,%d)" %(bytes,msecs) )
+	except sqlite3.OperationalError:
+		print "SMTH wrong while insert into writes"
+	finally:
+		conn.commit()
+#-----------------------------------------------------------------------------#
+def report_ls(objs, msecs):
+	try:
+		c.execute("INSERT INTO ls (objs,time) VALUES (%d,%d)" %(objs,msecs) )
+	except sqlite3.OperationalError:
+		print "SMTH wrong while insert into ls"
+	finally:
+		conn.commit()
+#-----------------------------------------------------------------------------#
+
+
+
+
+#-----------------------------------------------------------------------------#
+# operation definitions
+#-----------------------------------------------------------------------------#
+def get_random_name():
+	return ''.join(random.sample(chars,random.randint(4,40)))
+#-----------------------------------------------------------------------------#
+def get_random_size():
+	return random.randint(0,102400)
+#-----------------------------------------------------------------------------#
+def op_find(topdir=TESTDIR):
+	counter=0
+	time1=time.time()
+	for root,dirs,files in os.walk(topdir):
+		counter+=len(dirs)
+		counter+=len(files)
+	time2=time.time()
+	report_ls(counter,(time2-time1)*1000)
+	return os.walk(topdir)
+#-----------------------------------------------------------------------------#
+def op_randdir():
+	result=[]
+	result.append(TESTDIR)
+	for root,dirs,files in op_find():
+		if dirs:
+			for tmp_dir in dirs:
+				result.append(root+'/'+tmp_dir)
+	return random.choice(result)
+#-----------------------------------------------------------------------------#
+def op_randfile():
+	result=[]
+	for root,dirs,files in op_find():
+		if files:
+			for tmp_file in files:
+				result.append(root+'/'+tmp_file)
+	if not result:
+		return None
+	return random.choice(result)
+#-----------------------------------------------------------------------------#
+def op_write():
+	file_name=op_randdir() + '/' + get_random_name()
+	if not file_name:
+		file_name = op_randdir() + '/' + get_random_name()
+	size=get_random_size()
+	time1 = time.time()
+	try:
+		file=open(file_name, 'wb')
+		file.write(bytearray(RANDBYTES*size))
+		file.close()
+	except IOError:
+		return
+	finally:
+		time2 = time.time()
+		report_write(size, (time2-time1)*1000)
+#-----------------------------------------------------------------------------#
+def op_read():
+	file_name=op_randfile()
+	if not file_name:
+		return
+	size=0
+	time1=time.time()
+	try:
+		file=open(file_name,'rb')
+		while True:
+			if not file.read(1024):
+				break
+			size += 1
+		file.close()
+	except IOError:
+		return
+	finally:
+		time2=time.time()
+		report_read(size, (time2-time1)*1000)
+#-----------------------------------------------------------------------------#
+def op_append():
+	file_name=op_randfile()
+	if not file_name:
+		file_name = op_randdir() + '/' + get_random_name()
+	size=get_random_size()
+	time1=time.time()
+	try:
+		file=open(file_name, 'ab')
+		file.write(bytearray(RANDBYTES*size))
+		file.close()
+	except IOError:
+		return
+	finally:
+		time2=time.time()
+		report_write(size,(time2-time1)*1000)
+#-----------------------------------------------------------------------------#
+def op_cp():
+	if random.randint(0,1):
+		src_file=op_randfile()
+		if not src_file:
+			return
+	else:
+		src_file=op_randdir()
+	dst_file=op_randdir() + '/' + get_random_name()
+	try:
+		shutil.copytree(src_file,dst_file)
+	except shutil.Error:
+		pass
+	except OSError:
+		pass
+	finally:
+		pass
+#-----------------------------------------------------------------------------#
+def op_mv():
+	if random.randint(0,1):
+		src_file=op_randfile()
+		if not src_file:
+			return
+	else:
+		src_file=op_randdir()
+	dst_file=op_randdir() + '/' + get_random_name()
+	try:
+		shutil.move(src_file,dst_file)
+	except shutil.Error:
+		pass
+	except IOError:
+		pass
+	except OSError:
+		pass
+	finally:
+		pass
+#-----------------------------------------------------------------------------#
+def op_rm():
+	if random.randint(0,1):
+		src_file=op_randfile()
+		if not src_file:
+			return
+	else:
+		src_file=op_randdir()
+	try:
+		shutil.rmtree(src_file,True)
+	finally:
+		pass
+#-----------------------------------------------------------------------------#
+def op_mkdir():
+	try:
+		os.mkdir(op_randdir() + '/' + get_random_name())
+	except OSError:
+		pass # file or dir exists
+
+
+#-----------------------------------------------------------------------------#
+def timing(f):
+	def wrap(*args):
+		time1 = time.time()
+		ret = f(*args)
+		time2 = time.time()
+		print '%s function took %0.3f ms' % (f.func_name, (time2-time1)*1000.0)
+		return ret
+	return wrap
+#-----------------------------------------------------------------------------#
+
+def randop():
+	#OPERATIONS = [ "cp", "mv", "rm", "mkdir", "find", "finddir", "findfile",  "append", "read", "write" ]
+	#case
+	func_map={ 
+		"cp":op_cp, 
+		"mv":op_mv, 
+		"rm":op_rm, 
+		"mkdir":op_mkdir, 
+		"find":op_find, 
+		"finddir":op_randdir, 
+		"findfile":op_randfile,  
+		"append":op_append, 
+		"read":op_read, 
+		"write":op_write
+		}
+
+	func_map[random.choice(OPERATIONS)]()
+	
+#-----------------------------------------------------------------------------#
+if __name__ == "__main__":
+#	randop()
+	init_db()
+
+	try:	
+		while True:
+			randop()
+	except KeyboardInterrupt:
+		print "finished"
+	finally:
+		conn.close()
